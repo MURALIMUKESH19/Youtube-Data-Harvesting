@@ -4,7 +4,7 @@ import streamlit as st
 #API key connection
 
 def Api_connect():
-    Api_Id="AIzaSyDOOTxfJQQZBauzJ4YQVutje4A2q46nKJA"
+    Api_Id="YOUR API KEY"
 
     api_service_name="youtube"
     api_version="v3"
