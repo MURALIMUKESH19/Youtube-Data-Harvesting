@@ -1,160 +1,37 @@
 from googleapiclient.discovery import build
 import pandas as pd
 import streamlit as st
+import mysql.connector
+import datetime
+import plotly.express as px
+import re
+
+st.markdown("<h1 style='font-size:30px; color:blue;text-align:center;'>YouTube Data Harvesting and Warehousing using SQL and Streamlit</h1>", unsafe_allow_html=True)
+
 #API key connection
-
 def Api_connect():
-    Api_Id="AIzaSyDOOTxfJQQZBauzJ4YQVutje4A2q46nKJA"
-
+    Api_Id="AIzaSyClWUYKCknrVgmY-Vju1B1dTCJUOoyD4RE"
     api_service_name="youtube"
     api_version="v3"
-
     youtube=build(api_service_name,api_version,developerKey=Api_Id)
-
     return youtube
-
 youtube=Api_connect()
 
-#get channels information
-def get_channel_info(channel_id):
-    request=youtube.channels().list(
-                    part="snippet,ContentDetails,statistics",
-                    id=channel_id
-    )
-    response=request.execute()
-
-    for i in response['items']:
-        data=dict(Channel_Name=i["snippet"]["title"],
-                Channel_Id=i["id"],
-                Subscribers=i['statistics']['subscriberCount'],
-                Views=i["statistics"]["viewCount"],
-                Total_Videos=i["statistics"]["videoCount"],
-                Channel_Description=i["snippet"]["description"],
-                Playlist_Id=i["contentDetails"]["relatedPlaylists"]["uploads"])
-    return data
-#get video ids
-def get_videos_ids(channel_id):
-    video_ids=[]
-    response=youtube.channels().list(id=channel_id,
-                                    part='contentDetails').execute()
-    Playlist_Id=response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
-
-    next_page_token=None
-
-    while True:
-        response1=youtube.playlistItems().list(
-                                            part='snippet',
-                                            playlistId=Playlist_Id,
-                                            maxResults=50,
-                                            pageToken=next_page_token).execute()
-        for i in range(len(response1['items'])):
-            video_ids.append(response1['items'][i]['snippet']['resourceId']['videoId'])
-        next_page_token=response1.get('nextPageToken')
-
-        if next_page_token is None:
-            break
-    return video_ids
-    #get video information
-def get_video_info(video_ids):
-    video_data=[]
-    for video_id in video_ids:
-        request=youtube.videos().list(
-            part="snippet,ContentDetails,statistics",
-            id=video_id
-        )
-        response=request.execute()
-
-        for item in response["items"]:
-            data=dict(Channel_Name=item['snippet']['channelTitle'],
-                    Channel_Id=item['snippet']['channelId'],
-                    Video_Id=item['id'],
-                    Title=item['snippet']['title'],
-                    Tags=item['snippet'].get('tags'),
-                    Thumbnail=item['snippet']['thumbnails']['default']['url'],
-                    Description=item['snippet'].get('description'),
-                    Published_Date=item['snippet']['publishedAt'],
-                    Duration=item['contentDetails']['duration'],
-                    Views=item['statistics'].get('viewCount'),
-                    Likes=item['statistics'].get('likeCount'),
-                    Comments=item['statistics'].get('commentCount'),
-                    Favorite_Count=item['statistics']['favoriteCount'],
-                    Definition=item['contentDetails']['definition'],
-                    Caption_Status=item['contentDetails']['caption']
-                    )
-            video_data.append(data)    
-    return video_data
-    #get comment information
-def get_comment_info(video_ids):
-    Comment_data=[]
-    try:
-        for video_id in video_ids:
-            request=youtube.commentThreads().list(
-                part="snippet",
-                videoId=video_id,
-                maxResults=50
-            )
-            response=request.execute()
-
-            for item in response['items']:
-                data=dict(Comment_Id=item['snippet']['topLevelComment']['id'],
-                        Video_Id=item['snippet']['topLevelComment']['snippet']['videoId'],
-                        Comment_Text=item['snippet']['topLevelComment']['snippet']['textDisplay'],
-                        Comment_Author=item['snippet']['topLevelComment']['snippet']['authorDisplayName'],
-                        Comment_Published=item['snippet']['topLevelComment']['snippet']['publishedAt'])
-                
-                Comment_data.append(data)
-                
-    except:
-        pass
-    return Comment_data
-    #get_playlist_details
-
-def get_playlist_details(channel_id):
-        next_page_token=None
-        All_data=[]
-        while True:
-                request=youtube.playlists().list(
-                        part='snippet,contentDetails',
-                        channelId=channel_id,
-                        maxResults=50,
-                        pageToken=next_page_token
-                )
-                response=request.execute()
-
-                for item in response['items']:
-                        data=dict(Playlist_Id=item['id'],
-                                Title=item['snippet']['title'],
-                                Channel_Id=item['snippet']['channelId'],
-                                Channel_Name=item['snippet']['channelTitle'],
-                                PublishedAt=item['snippet']['publishedAt'],
-                                Video_Count=item['contentDetails']['itemCount'])
-                        All_data.append(data)
-
-                next_page_token=response.get('nextPageToken')
-                if next_page_token is None:
-                        break
-        return All_data
-import mysql.connector
-from googleapiclient.discovery import build
-import datetime
-
-
-# Connect to MySQL
+# MySQL Connection
 def connect_mysql():
     try:
         conn = mysql.connector.connect(
             host="localhost",
             user="root",
             password="Muraliravi@007",
-            database="youtube"
+            database="Youtube"
         )
         print("Connected to MySQL database")
         return conn
     except Exception as e:
         print(f"Error connecting to MySQL database: {e}")
         return None
-
-# Create necessary tables if they don't exist
+# Table Creation of MySQL
 def create_tables(conn):
     try:
         cursor = conn.cursor()
@@ -189,7 +66,7 @@ def create_tables(conn):
                 Thumbnail VARCHAR(255),
                 Description TEXT,
                 Published_Date DATETIME,
-                Duration VARCHAR(255),
+                Duration Time,
                 Views BIGINT,
                 Likes BIGINT,
                 Comments BIGINT,
@@ -211,7 +88,7 @@ def create_tables(conn):
         print("Tables created or already exist")
     except Exception as e:
         print(f"Error creating tables: {e}")
-
+        
 # Function to insert data into the corresponding table
 def insert_data(conn, table_name, data):
     try:
@@ -246,11 +123,21 @@ def insert_data(conn, table_name, data):
                     item["Channel_Name"], published_at, item["Video_Count"]
                 ))
         elif table_name == "video_details":
+            def parse_duration(duration):
+                 match = re.match(r'^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$', duration)
+                 if not match:
+                    return None             
+                 hours, minutes, seconds = match.groups()
+                 hours = int(hours) if hours else 0
+                 minutes = int(minutes) if minutes else 0
+                 seconds = int(seconds) if seconds else 0       
+                 return f"{hours:02}:{minutes:02}:{seconds:02}"  
             for item in data:
                 tags = ', '.join(item["Tags"]) if item["Tags"] else None
                 if tags and len(tags) > 65535:
                     tags = tags[:65535]  # Truncate if too long
                 published_date = datetime.datetime.strptime(item["Published_Date"], "%Y-%m-%dT%H:%M:%SZ")
+                duration = parse_duration(item["Duration"])
                 cursor.execute("""
                     INSERT INTO video_details (
                         Channel_Name, Channel_Id, Video_Id, Title, Tags, Thumbnail,
@@ -267,9 +154,9 @@ def insert_data(conn, table_name, data):
                 """, (
                     item["Channel_Name"], item["Channel_Id"], item["Video_Id"], item["Title"],
                     tags, item["Thumbnail"], item["Description"], published_date,
-                    item["Duration"], item["Views"], item["Likes"], item["Comments"],
+                    duration, item["Views"], item["Likes"], item["Comments"],
                     item["Favorite_Count"], item["Definition"], item["Caption_Status"]
-                ))
+                ))  
         elif table_name == "comment_details":
             for item in data:
                 comment_published = datetime.datetime.strptime(item["Comment_Published"], "%Y-%m-%dT%H:%M:%SZ")
@@ -289,7 +176,8 @@ def insert_data(conn, table_name, data):
     except Exception as e:
         print(f"Error inserting data into {table_name} table: {e}")
 
-# Function to get channel information
+# Data Collection Functions
+# Channel Information
 def get_channel_info(channel_id):
     try:
         request = youtube.channels().list(
@@ -297,10 +185,8 @@ def get_channel_info(channel_id):
             id=channel_id
         )
         response = request.execute()
-
         if 'items' not in response or not response['items']:
             raise ValueError("No channel information found for the given channel ID")
-
         for i in response['items']:
             data = {
                 "Channel_Name": i["snippet"]["title"],
@@ -321,20 +207,17 @@ def get_videos_ids(channel_id):
     video_ids = []
     response = youtube.channels().list(id=channel_id, part='contentDetails').execute()
     Playlist_Id = response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
-
     next_page_token = None
-
     while True:
         response1 = youtube.playlistItems().list(
             part='snippet',
             playlistId=Playlist_Id,
-            maxResults=50,
+            maxResults=500,
             pageToken=next_page_token
         ).execute()
         for i in range(len(response1['items'])):
             video_ids.append(response1['items'][i]['snippet']['resourceId']['videoId'])
         next_page_token = response1.get('nextPageToken')
-
         if next_page_token is None:
             break
     return video_ids
@@ -390,51 +273,51 @@ def get_playlist_details(channel_id):
         playlists.append(data)
     return playlists
 
-# Function to get comment details
+
 def get_comment_info(video_ids):
     comment_data = []
     try:
         for video_id in video_ids:
-            request = youtube.commentThreads().list(
-                part="snippet",
-                videoId=video_id,
-                maxResults=100
-            )
-            response = request.execute()
-            
-            if 'items' not in response:
-                # Comments are disabled for this video, so skip it
-                print(f"Comments are disabled for video with ID: {video_id}")
-                continue
-            
-            for item in response["items"]:
-                comment = item["snippet"]["topLevelComment"]
-                data = {
-                    "Comment_Id": comment["id"],
-                    "Video_Id": video_id,
-                    "Comment_Text": comment["snippet"]["textDisplay"],
-                    "Comment_Author": comment["snippet"]["authorDisplayName"],
-                    "Comment_Published": comment["snippet"]["publishedAt"]
-                }
-                comment_data.append(data)
+            next_page_token = None
+            while True:
+                request = youtube.commentThreads().list(
+                    part="snippet",
+                    videoId=video_id,
+                    maxResults=100,
+                    pageToken=next_page_token
+                )
+                response = request.execute()              
+                if 'items' not in response:
+                    # Comments are disabled for this video, so skip it
+                    print(f"Comments are disabled for video with ID: {video_id}")
+                    break                
+                for item in response["items"]:
+                    comment = item["snippet"]["topLevelComment"]
+                    data = {
+                        "Comment_Id": comment["id"],
+                        "Video_Id": video_id,
+                        "Comment_Text": comment["snippet"]["textDisplay"],
+                        "Comment_Author": comment["snippet"]["authorDisplayName"],
+                        "Comment_Published": comment["snippet"]["publishedAt"]
+                    }
+                    comment_data.append(data)               
+                next_page_token = response.get('nextPageToken')
+                if not next_page_token:
+                    break
     except Exception as e:
         print(f"An error occurred: {e}")
     return comment_data
-
-
 
 # Function to upload all details to MySQL
 def channel_details(channel_id):
     conn = connect_mysql()
     if conn:
         create_tables(conn)
-
         ch_details = get_channel_info(channel_id)
         pl_details = get_playlist_details(channel_id)
         vi_ids = get_videos_ids(channel_id)
         vi_details = get_video_info(vi_ids)
         com_details = get_comment_info(vi_ids)
-
         if ch_details:
             insert_data(conn, "channel_details", ch_details)
         if pl_details:
@@ -443,7 +326,6 @@ def channel_details(channel_id):
             insert_data(conn, "video_details", vi_details)
         if com_details:
             insert_data(conn, "comment_details", com_details)
-
         conn.close()
         return "Upload completed successfully"
     else:
@@ -451,7 +333,6 @@ def channel_details(channel_id):
 
 
 def tables(channel_name):
-
     news= channels_table(channel_name)
     if news:
         st.write(news)
@@ -459,75 +340,67 @@ def tables(channel_name):
         playlist_table(channel_name)
         videos_table(channel_name)
         comments_table(channel_name)
-
     return "Tables Created Successfully"
 
-def show_channels_table(conn):
+#Display Tables
+def show_comments_table(conn):
     try:
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM channel_details")
-        ch_list = cursor.fetchall()
-        
-        if ch_list:
-            df = st.dataframe(ch_list)
+        cursor.execute("SELECT * FROM comment_details")
+        com_list = cursor.fetchall()
+        if com_list:
+            df3 = st.dataframe(com_list)
         else:
-            st.write("No data found in channel_details table.")
-        
-        return df
+            st.write("No data found in comment_details table.")
+            df3 = None  # Set df3 to None if there's no data
+        return df3
     except Exception as e:
-        st.write(f"Error fetching data from channel_details table: {e}")
+        st.write(f"Error fetching data from comment_details table: {e}")
         return None
+
 
 def show_playlists_table(conn):
     try:
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT * FROM playlist_details")
         pl_list = cursor.fetchall()
-        
         if pl_list:
             df1 = st.dataframe(pl_list)
         else:
             st.write("No data found in playlist_details table.")
-        
         return df1
     except Exception as e:
         st.write(f"Error fetching data from playlist_details table: {e}")
         return None
-
 
 def show_videos_table(conn):
     try:
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT * FROM video_details")
         vi_list = cursor.fetchall()
-        
         if vi_list:
             df2 = st.dataframe(vi_list)
         else:
             st.write("No data found in video_details table.")
-        
         return df2
     except Exception as e:
         st.write(f"Error fetching data from video_details table: {e}")
         return None
 
-
-def show_comments_table(conn):
+def show_channels_table(conn):
     try:
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM comment_details")
-        com_list = cursor.fetchall()
-        
-        if com_list:
-            df3 = st.dataframe(com_list)
+        cursor.execute("SELECT * FROM channel_details")
+        ch_list = cursor.fetchall()        
+        if ch_list:
+            df = st.dataframe(ch_list)
         else:
-            st.write("No data found in comment_details table.")
-        
-        return df3
+            st.write("No data found in channel_details table.")
+            df = None  # Set df to None if there's no data        
+        return df
     except Exception as e:
-        st.write(f"Error fetching data from comment_details table: {e}")
+        st.write(f"Error fetching data from channel_details table: {e}")
         return None
-
 
 # Function to check if the channel ID already exists in MySQL
 def check_channel_exists(conn, channel_id):
@@ -554,18 +427,7 @@ def insert_channel_details(conn, channel_id):
         print(f"Error inserting channel details: {e}")
         return "Error: Failed to insert channel details"
 
-
-# Streamlit app
-with st.sidebar:
-    st.title(":red[YOUTUBE DATA HARVESTING AND WAREHOUSING]")
-    st.header("Skill Take Away")
-    st.caption("Python Scripting")
-    st.caption("Data Collection")
-    st.caption("MySQL")
-    st.caption("API Integration")
-    st.caption("Data Management using MySQL and SQL")
-
-# Main content
+# Streamlit app sections
 channel_id = st.text_input("Enter the channel ID")
 
 if st.button("Collect and store data"):
@@ -596,17 +458,11 @@ def display_tables(channel_name):
     # Your implementation of retrieving and displaying tables goes here
     pass
 
-
 # Main content
 conn = connect_mysql()
 if conn:
     all_channels = get_all_channels(conn)
-    unique_channel = st.selectbox("Select the Channel", all_channels)
-
-    if st.button("Migrate to SQL"):
-        display_tables(unique_channel)
-
-    show_table = st.radio("SELECT THE TABLE FOR VIEW", ("CHANNELS", "PLAYLISTS", "VIDEOS", "COMMENTS"))
+    show_table = st.selectbox("CHOOSE THE TABLE FOR VIEW", ("CHANNELS", "PLAYLISTS", "VIDEOS", "COMMENTS"))
 
     if show_table == "CHANNELS":
         show_channels_table(conn)
@@ -616,74 +472,68 @@ if conn:
         show_videos_table(conn)
     elif show_table == "COMMENTS":
         show_comments_table(conn)
-
     conn.close()
 
-import streamlit as st
-import mysql.connector
-import pandas as pd
 
-# Function to execute SQL queries and return results as dataframe
+
+# Function to execute a query and return a DataFrame
 def execute_query(conn, query):
     try:
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute(query)
-        result = cursor.fetchall()
-        if result:
-            df = pd.DataFrame(result)
-            return df
-        else:
-            return None
+        df = pd.read_sql(query, conn)
+        return df
     except Exception as e:
-        st.error(f"Error executing SQL query: {e}")
+        st.error(f"Error executing query: {e}")
         return None
+            
 
-# Connect to MySQL
-def connect_mysql():
-    try:
-        conn = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="Muraliravi@007",
-            database="Youtube"
-        )
-        st.success("Connected to MySQL database")
-        return conn
-    except Exception as e:
-        st.error(f"Error connecting to MySQL database: {e}")
-        return None
+# SQL queries
+queries = {
+    "1. Video names and their channels?": "SELECT Title AS Video_Name, Channel_Name FROM video_details",
+    "2. Channels with most videos & count? ": "SELECT Channel_Name, COUNT(*) AS Video_Count FROM video_details GROUP BY Channel_Name ORDER BY Video_Count DESC LIMIT 5",
+    "3. Top 10 viewed videos & channels?": "SELECT Title AS Video_Name, Channel_Name, Views FROM video_details ORDER BY Views DESC LIMIT 10",
+    "4. Comments Each video &  names?": "SELECT v.Title AS Video_Name, COUNT(c.Comment_Id) AS Comment_Count FROM video_details v LEFT JOIN comment_details c ON v.Video_Id = c.Video_Id GROUP BY v.Title",
+    "5.Most liked videos & channels?": "SELECT Title AS Video_Name, Channel_Name, Likes FROM video_details ORDER BY Likes DESC LIMIT 10",
+    "6. Total likes/dislikes per video & names?": "SELECT Title AS Video_Name, SUM(Likes) AS Total_Likes, SUM(likes) AS likes FROM video_details GROUP BY Title",
+    "7. Total views each channel & names?": "SELECT Channel_Name, SUM(Views) AS Total_Views FROM video_details GROUP BY Channel_Name",
+    "8. Channels with videos in 2022?": "SELECT DISTINCT Channel_Name FROM video_details WHERE YEAR(Published_Date) = 2022",
+    "9. Avg duration per channel & names?": "SELECT Channel_Name, AVG(TIME_TO_SEC(TIMEDIFF(STR_TO_DATE(Duration, '%H:%i:%s'), STR_TO_DATE('00:00:00', '%H:%i:%s')))) AS Average_Duration FROM video_details GROUP BY Channel_Name",
+    "10. Most commented videos & channels?": "SELECT v.Title AS Video_Name, v.Channel_Name AS Channel_Name, COUNT(c.Comment_Id) AS Comment_Count FROM video_details v LEFT JOIN comment_details c ON v.Video_Id = c.Video_Id GROUP BY v.Title, v.Channel_Name ORDER BY Comment_Count DESC LIMIT 10"
+}
 
-# Main Streamlit app
-def main():
-    st.title("YouTube Data Analysis")
+st.markdown("<h1 style='font-size:20px; color:Red; text-align:center;'>Comprehensive Analysis of YouTube Videos and Channels Using SQL Queries</h1>", unsafe_allow_html=True)
 
-    # SQL queries
-    queries = {
-        "1. Names of all videos and their corresponding channels": "SELECT Title, Channel_Name FROM video_details",
-        "2. Channels with the most number of videos and their counts": "SELECT Channel_Name, COUNT(*) AS Video_Count FROM video_details GROUP BY Channel_Name ORDER BY Video_Count DESC LIMIT 1",
-        "3. Top 10 most viewed videos and their respective channels": "SELECT Title, Channel_Name, Views FROM video_details ORDER BY Views DESC LIMIT 10",
-        "4. Number of comments on each video and their corresponding names": "SELECT v.Title, COUNT(*) AS Comment_Count FROM video_details v JOIN comment_details c ON v.Video_Id = c.Video_Id GROUP BY v.Title",
-        "5. Videos with the highest number of likes and their corresponding channel names": "SELECT Title, Channel_Name, Likes FROM video_details ORDER BY Likes DESC LIMIT 1",
-        "6. Total number of likes and dislikes for each video and their corresponding names": "SELECT Title, SUM(Likes) AS Total_Likes FROM video_details GROUP BY Title",
-        "7. Total number of views for each channel and their corresponding names": "SELECT Channel_Name, SUM(Views) AS Total_Views FROM video_details GROUP BY Channel_Name",
-        "8. Names of all channels that have published videos in the year 2022": "SELECT DISTINCT Channel_Name FROM video_details WHERE YEAR(Published_Date) = 2022",
-        "9. Average duration of all videos in each channel and their corresponding names": "SELECT Channel_Name, AVG(Duration) AS Avg_Duration FROM video_details GROUP BY Channel_Name",
-        "10. Videos with the highest number of comments and their corresponding channel names": "SELECT v.Title AS Video_Name, v.Channel_Name, COUNT(c.Comment_Id) AS Comment_Count FROM video_details v LEFT JOIN comment_details c ON v.Video_Id = c.Video_Id GROUP BY v.Title, v.Channel_Name ORDER BY Comment_Count DESC LIMIT 10"
-    }
 
-    # Display query results
+
+# Streamlit app
+selected_query = st.selectbox("Select the SQL query", list(queries.keys()))
+
+if st.button("Run Query"):
     conn = connect_mysql()
     if conn:
-        for query_name, query_str in queries.items():
-            st.subheader(query_name)
-            df = execute_query(conn, query_str)
-            if df is not None:
-                st.write(df)
-            else:
-                st.write("No results found for this query.")
+        df = execute_query(conn, queries[selected_query])
+        if df is not None:
+            st.write(df)
+            
+            # Visualization
+            if "Video_Name" in df.columns and "Views" in df.columns:
+                fig = px.bar(df, x="Video_Name", y="Views", title="Top 10 Viewed Videos", labels={'Views':'Number of Views'})
+                st.plotly_chart(fig)
+            elif "Channel_Name" in df.columns and "Video_Count" in df.columns:
+                fig = px.bar(df, x="Channel_Name", y="Video_Count", title="Channels with Most Videos", labels={'Video_Count':'Number of Videos'})
+                st.plotly_chart(fig)
+            elif "Video_Name" in df.columns and "Likes" in df.columns:
+                fig = px.bar(df, x="Video_Name", y="Likes", title="Most Liked Videos", labels={'Likes':'Number of Likes'})
+                st.plotly_chart(fig)
+            elif "Channel_Name" in df.columns and "Total_Views" in df.columns:
+                fig = px.bar(df, x="Channel_Name", y="Total_Views", title="Total Views per Channel", labels={'Total_Views':'Number of Views'})
+                st.plotly_chart(fig)
+            elif "Channel_Name" in df.columns and "Average_Duration" in df.columns:
+                df["Average_Duration"] = df["Average_Duration"] / 60  # Convert seconds to minutes
+                fig = px.bar(df, x="Channel_Name", y="Average_Duration", title="Average Duration per Channel", labels={'Average_Duration':'Average Duration (minutes)'})
+                st.plotly_chart(fig)   
+
+        else:
+            st.write("No results found.")
         conn.close()
     else:
-        st.error("Failed to connect to MySQL database")
-
-if __name__ == "__main__":
-    main()
+        st.write("Failed to connect to MySQL database.")
